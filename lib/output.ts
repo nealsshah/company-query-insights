@@ -73,7 +73,7 @@ function getProvenanceSources(enriched?: EnrichedQuery): string[] {
   }
 
   // Remove duplicates
-  return [...new Set(sources)];
+  return Array.from(new Set(sources));
 }
 
 function calculateConfidence(

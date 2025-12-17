@@ -45,6 +45,9 @@ export interface EnrichedQuery extends ExpandedQuery {
   geo: string;
   lang: string;
   volume_source?: string;
+  volume_provider?: string;
+  volume_source_query?: string; // The query variant that matched (if fallback was used)
+  has_volume?: boolean;
 }
 
 export interface QueryWithScore extends EnrichedQuery {
@@ -84,7 +87,7 @@ export interface InsightsOutput {
 }
 
 export interface ProvenanceSource {
-  type: 'generated:llm' | 'discovered:paa' | 'estimated:google_ads' | 'estimated:dataforseo' | 'observed:gsc' | 'observed:bing_wmt';
+  type: 'generated:llm' | 'discovered:paa' | 'estimated:google_ads' | 'dataforseo:google_ads' | 'estimated:fallback' | 'observed:gsc' | 'observed:bing_wmt';
   confidence: number;
 }
 
