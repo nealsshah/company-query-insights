@@ -174,6 +174,19 @@ export default function Home() {
     return colors[intent] || '#6B7280';
   }
 
+  const intentOrder = useMemo(() => {
+    // Fixed display order (not ranked by count)
+    return [
+      'informational',
+      'transactional',
+      'navigational',
+      'comparison',
+      'discovery',
+      'troubleshooting',
+      'unknown',
+    ];
+  }, []);
+
   const intentBreakdown = useMemo(() => {
     if (!results) return [];
 
@@ -198,8 +211,14 @@ export default function Home() {
         pct: count / total,
         color: getIntentColor(intent),
       }))
-      .sort((a, b) => b.count - a.count);
-  }, [results]);
+      .sort((a, b) => {
+        const ai = intentOrder.indexOf(a.intent);
+        const bi = intentOrder.indexOf(b.intent);
+        const aOrder = ai === -1 ? Number.MAX_SAFE_INTEGER : ai;
+        const bOrder = bi === -1 ? Number.MAX_SAFE_INTEGER : bi;
+        return aOrder - bOrder;
+      });
+  }, [results, intentOrder]);
 
   const getSourceLabel = (source: string): string => {
     if (source.includes('paa')) return 'PAA';
