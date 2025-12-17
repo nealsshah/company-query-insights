@@ -1,0 +1,230 @@
+{
+  "info": {
+    "name": "Meridian Take-Home API",
+    "description": "API collection for Company Search Query Insights",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "http://localhost:3000/api/health",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Full Pipeline - Get Insights",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"Gymshark\",\n  \"website\": \"https://www.gymshark.com\",\n  \"geo\": \"US\",\n  \"lang\": \"en\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/insights",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "insights"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Step 1 - Company Context",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"Gymshark\",\n  \"website\": \"https://www.gymshark.com\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/steps/company-context",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "steps",
+            "company-context"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Step 2 - Seed Queries",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"Gymshark\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/steps/seed-queries",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "steps",
+            "seed-queries"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Step 3 - Expand Queries",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"seedQueries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"intent\": \"navigational\",\n      \"rationale\": \"Direct brand search\",\n      \"seed_type\": \"llm\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/steps/expand-queries",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "steps",
+            "expand-queries"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Step 4 - Enrich Volume",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"queries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\"\n    }\n  ],\n  \"geo\": \"US\",\n  \"lang\": \"en\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/steps/enrich-volume",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "steps",
+            "enrich-volume"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Step 5 - Cluster & Rank",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"queries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 1000,\n      \"geo\": \"US\",\n      \"lang\": \"en\"\n    }\n  ],\n  \"company\": \"Gymshark\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/steps/cluster-rank",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "steps",
+            "cluster-rank"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Step 6 - Provenance",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"topics\": [\n    {\n      \"topic\": \"Store Locations\",\n      \"topic_score\": 1000,\n      \"confidence\": 0.7,\n      \"top_queries\": [\n        {\n          \"query\": \"gymshark store\",\n          \"intent\": \"navigational\",\n          \"volume_monthly\": 1000\n        }\n      ]\n    }\n  ],\n  \"queries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 1000,\n      \"geo\": \"US\",\n      \"lang\": \"en\"\n    }\n  ],\n  \"company\": \"Gymshark\"\n}"
+        },
+        "url": {
+          "raw": "http://localhost:3000/api/steps/provenance",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "3000",
+          "path": [
+            "api",
+            "steps",
+            "provenance"
+          ]
+        }
+      }
+    }
+  ]
+}
