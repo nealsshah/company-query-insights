@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     const seedQueries = await generateSeedQueries(companyProfile);
 
     // Step 3: Expand queries
-    const expandedQueries = await expandQueries(seedQueries);
+    const expandedQueries = await expandQueries(seedQueries, geo, lang);
 
     // Step 4: Enrich with volume metrics
     const enrichedQueries = await enrichWithVolume(expandedQueries, geo, lang);

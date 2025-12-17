@@ -23,6 +23,8 @@ export interface ExpandedQuery {
   source: 'paa' | 'llm';
   parent_seed?: string;
   intent?: string;
+  geo?: string;
+  lang?: string;
 }
 
 export interface VolumeMetrics {

@@ -1,7 +1,12 @@
 import axios from 'axios';
 import cheerio from 'cheerio';
 import puppeteer from 'puppeteer';
+import OpenAI from 'openai';
 import { CompanyProfile } from '@/types';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 /**
  * Step 1: Company → Context Extraction
@@ -33,15 +38,98 @@ export async function extractCompanyContext(
     extractedText,
   };
 
-  // Simple extraction (can be enhanced with LLM)
+  // Extract structured information using LLM
   if (extractedText && extractedText.length > 0) {
-    profile.products = extractProducts(extractedText, companyName);
-    profile.services = extractServices(extractedText);
-    profile.targetAudience = extractTargetAudience(extractedText);
-    profile.categories = extractCategories(extractedText);
+    try {
+      const extracted = await extractStructuredInfoWithLLM(extractedText, companyName);
+      profile.products = extracted.products;
+      profile.services = extracted.services;
+      profile.targetAudience = extracted.targetAudience;
+      profile.categories = extracted.categories;
+    } catch (error) {
+      console.error('Error extracting structured info with LLM, using fallback:', error);
+      // Fallback to pattern-based extraction if LLM fails
+      profile.products = extractProducts(extractedText, companyName);
+      profile.services = extractServices(extractedText);
+      profile.targetAudience = extractTargetAudience(extractedText);
+      profile.categories = extractCategories(extractedText);
+    }
   }
 
   return profile;
+}
+
+async function extractStructuredInfoWithLLM(
+  extractedText: string,
+  companyName: string
+): Promise<{
+  products: string[];
+  services: string[];
+  targetAudience: string[];
+  categories: string[];
+}> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not available');
+  }
+
+  // Truncate text if too long (to save tokens)
+  const textToAnalyze = extractedText.length > 8000
+    ? extractedText.substring(0, 8000) + '...'
+    : extractedText;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a business analyst. Extract structured company information from website text. Return valid JSON only.',
+        },
+        {
+          role: 'user',
+          content: `Analyze the following website text for "${companyName}" and extract structured information.
+
+Website text:
+${textToAnalyze}
+
+Extract and return JSON with these fields:
+- products: array of specific product names/types mentioned (e.g., ["Leggings", "Sports Bras", "Gym Shorts"])
+- services: array of services offered (e.g., ["Free Delivery", "Returns", "Customer Service"])
+- targetAudience: array of target customer segments (e.g., ["Women", "Men", "Athletes", "Fitness Enthusiasts"])
+- categories: array of business categories/industries (e.g., ["Activewear", "Athleisure", "Fitness Apparel"])
+
+Only include items that are explicitly mentioned or clearly implied in the text. Be specific and accurate.
+
+Return JSON format:
+{
+  "products": ["product1", "product2", ...],
+  "services": ["service1", "service2", ...],
+  "targetAudience": ["audience1", "audience2", ...],
+  "categories": ["category1", "category2", ...]
+}`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.3,
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from LLM');
+    }
+
+    const parsed = JSON.parse(content);
+
+    return {
+      products: Array.isArray(parsed.products) ? parsed.products.slice(0, 20) : [],
+      services: Array.isArray(parsed.services) ? parsed.services.slice(0, 15) : [],
+      targetAudience: Array.isArray(parsed.targetAudience) ? parsed.targetAudience.slice(0, 10) : [],
+      categories: Array.isArray(parsed.categories) ? parsed.categories.slice(0, 10) : [],
+    };
+  } catch (error) {
+    console.error('Error in LLM extraction:', error);
+    throw error;
+  }
 }
 
 async function scrapeCompanyPages(website: string): Promise<string> {

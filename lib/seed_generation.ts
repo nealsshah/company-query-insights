@@ -51,7 +51,7 @@ export async function generateSeedQueries(
 }
 
 function buildSeedPrompt(profile: CompanyProfile): string {
-  return `Generate 30-50 diverse search queries related to "${profile.name}".
+  return `Generate 12-20 diverse search queries related to "${profile.name}".
 
 Company context:
 - Products: ${profile.products.join(', ') || 'Not specified'}

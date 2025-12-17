@@ -93,7 +93,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"company\": \"Gymshark\"\n}"
+          "raw": "{\n  \"company\": \"Gymshark\",\n  \"website\": \"https://www.gymshark.com\"\n}"
         },
         "url": {
           "raw": "http://localhost:3000/api/steps/seed-queries",
