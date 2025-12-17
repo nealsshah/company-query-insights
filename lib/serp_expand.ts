@@ -1,10 +1,14 @@
 import axios from 'axios';
 import { SeedQuery, ExpandedQuery } from '@/types';
+import { generateCacheKey, getCache, setCache } from './cache';
 
 /**
  * Step 3: Query Expansion (SERP / PAA)
  * Expands seed queries using People Also Ask and related questions via SerpAPI
  */
+
+// Cache duration: 3 days for PAA results (can change more frequently)
+const PAA_CACHE_DURATION_MS = 3 * 24 * 60 * 60 * 1000;
 
 export async function expandQueries(
   seedQueries: SeedQuery[] | Array<{ query: string; intent?: string }>,
@@ -66,6 +70,14 @@ async function fetchPeopleAlsoAsk(
     return generateRelatedQuestions(query);
   }
 
+  // Check cache first for this specific query
+  const cacheKey = generateCacheKey('paa', query.toLowerCase(), geo, lang);
+  const cached = getCache<string[]>(cacheKey, PAA_CACHE_DURATION_MS);
+  if (cached) {
+    console.log(`PAA cache hit for "${query}"`);
+    return cached;
+  }
+
   try {
     const response = await axios.get('https://serpapi.com/search', {
       params: {
@@ -111,6 +123,10 @@ async function fetchPeopleAlsoAsk(
       .filter(q => isValidQuery(q));
 
     console.log(`Found ${cleaned.length} PAA queries for "${query}"`);
+    
+    // Cache the result
+    setCache(cacheKey, cleaned);
+    
     return cleaned;
   } catch (error: any) {
     console.error(`SerpAPI error for query "${query}":`, error.message);

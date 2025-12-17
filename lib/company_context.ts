@@ -3,10 +3,14 @@ import cheerio from 'cheerio';
 import puppeteer from 'puppeteer';
 import OpenAI from 'openai';
 import { CompanyProfile } from '@/types';
+import { generateCacheKey, getCache, setCache } from './cache';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// Cache duration: 7 days for company context (doesn't change often)
+const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Step 1: Company → Context Extraction
@@ -21,6 +25,13 @@ export async function extractCompanyContext(
   let normalizedWebsite = website.trim();
   if (!normalizedWebsite.startsWith('http://') && !normalizedWebsite.startsWith('https://')) {
     normalizedWebsite = `https://${normalizedWebsite}`;
+  }
+
+  // Check cache first
+  const cacheKey = generateCacheKey('company_context', companyName.toLowerCase(), normalizedWebsite);
+  const cached = getCache<CompanyProfile>(cacheKey, CACHE_DURATION_MS);
+  if (cached) {
+    return cached;
   }
 
   // Scrape homepage and about page
@@ -55,6 +66,9 @@ export async function extractCompanyContext(
       profile.categories = extractCategories(extractedText);
     }
   }
+
+  // Cache the result
+  setCache(cacheKey, profile);
 
   return profile;
 }

@@ -1,8 +1,9 @@
 import OpenAI from 'openai';
-import { EnrichedQuery, QueryWithScore, Topic, CompanyProfile } from '@/types';
+import { EnrichedQuery, QueryWithScore, Topic, CompanyProfile, QueryResult } from '@/types';
+import { generateCacheKey, getCache, setCache } from './cache';
 
 /**
- * Step 5: Cluster into Topics + Rank
+ * Step 5: Topic Clustering + Ranking
  * Groups queries into topics using embeddings and clustering, then ranks them
  */
 
@@ -10,80 +11,196 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Cache duration: 30 days for embeddings (they don't change)
+const EMBEDDING_CACHE_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+
+interface NormalizedQuery extends EnrichedQuery {
+  query_original: string;
+  query_normalized: string;
+}
+
+interface QueryWithEmbedding extends NormalizedQuery {
+  embedding?: number[];
+}
+
+interface ScoredQuery extends QueryWithEmbedding {
+  volume_score: number;
+  relevance_score: number;
+  source_bonus: number;
+  intent_weight: number;
+  query_score: number;
+  confidence: number;
+}
+
+interface ClusterResult {
+  topic_id: string;
+  queries: ScoredQuery[];
+  centroid?: number[];
+}
+
 export async function clusterAndRank(
   enrichedQueries: EnrichedQuery[],
   companyProfile: CompanyProfile
 ): Promise<Topic[]> {
-  // Step 1: Create embeddings for queries
-  const queriesWithEmbeddings = await createEmbeddings(enrichedQueries);
+  console.log(`Starting cluster & rank for ${enrichedQueries.length} queries`);
   
-  // Step 2: Create embedding for company profile
+  // Step 1: Normalize and dedupe queries
+  const normalizedQueries = normalizeAndDedupe(enrichedQueries);
+  console.log(`After normalization/dedupe: ${normalizedQueries.length} queries`);
+  
+  // Step 2: Create embeddings for queries
+  const queriesWithEmbeddings = await createEmbeddings(normalizedQueries);
+  
+  // Step 3: Create embedding for company profile
   const companyEmbedding = await createCompanyProfileEmbedding(companyProfile);
   
-  // Step 3: Calculate relevance scores
-  const queriesWithScores = calculateRelevanceScores(queriesWithEmbeddings, companyEmbedding);
+  // Step 4: Calculate all scores for each query
+  const scoredQueries = calculateQueryScores(queriesWithEmbeddings, companyEmbedding);
   
-  // Step 4: Cluster queries
-  const clusters = clusterQueries(queriesWithScores);
+  // Step 5: Cluster queries into topics
+  const clusters = clusterQueriesWithEmbeddings(scoredQueries);
+  console.log(`Created ${clusters.length} clusters`);
   
-  // Step 5: Label clusters and rank
-  const topics = await labelAndRankClusters(clusters, queriesWithScores);
+  // Step 6: Label clusters and create final topic output
+  const topics = await labelAndRankClusters(clusters);
   
   return topics;
 }
 
-async function createEmbeddings(
-  queries: EnrichedQuery[]
-): Promise<QueryWithScore[]> {
+/**
+ * Step 1: Normalize + Dedupe
+ */
+function normalizeAndDedupe(queries: EnrichedQuery[]): NormalizedQuery[] {
+  const seen = new Map<string, NormalizedQuery>();
+  
+  for (const query of queries) {
+    const original = query.query;
+    const normalized = normalizeQuery(original);
+    
+    // Skip empty queries
+    if (!normalized) continue;
+    
+    // Dedupe by normalized form - keep the one with higher volume or first seen
+    const existing = seen.get(normalized);
+    if (!existing || (query.volume_monthly || 0) > (existing.volume_monthly || 0)) {
+      seen.set(normalized, {
+        ...query,
+        query_original: original,
+        query_normalized: normalized,
+      });
+    }
+  }
+  
+  return Array.from(seen.values());
+}
+
+function normalizeQuery(query: string): string {
+  return query
+    .toLowerCase()
+    .trim()
+    .replace(/[?.!]+$/, '')           // Remove trailing punctuation
+    .replace(/\s+/g, ' ')              // Collapse multiple spaces
+    .replace(/(\b\w+\b)( \1\b)+/gi, '$1') // Remove consecutive duplicate words (e.g., "gymshark gymshark")
+    .trim();
+}
+
+/**
+ * Step 2: Compute Embeddings (with caching)
+ */
+async function createEmbeddings(queries: NormalizedQuery[]): Promise<QueryWithEmbedding[]> {
   if (!process.env.OPENAI_API_KEY) {
-    // Fallback: return queries without embeddings
-    return queries.map((q) => ({
-      ...q,
-      query_score: 0,
-      relevance_score: 0,
-      intent_weight: getIntentWeight(q.intent || 'informational'),
-    }));
+    console.warn('No OpenAI API key, skipping embeddings');
+    return queries.map(q => ({ ...q }));
+  }
+
+  // Check which queries are already cached
+  const results: QueryWithEmbedding[] = [];
+  const uncachedQueries: NormalizedQuery[] = [];
+  const uncachedIndices: number[] = [];
+
+  for (let i = 0; i < queries.length; i++) {
+    const query = queries[i];
+    const cacheKey = generateCacheKey('embedding', query.query_normalized);
+    const cached = getCache<number[]>(cacheKey, EMBEDDING_CACHE_DURATION_MS);
+    
+    if (cached) {
+      results.push({ ...query, embedding: cached });
+    } else {
+      uncachedQueries.push(query);
+      uncachedIndices.push(i);
+    }
+  }
+
+  console.log(`Embeddings: ${results.length} cached, ${uncachedQueries.length} to fetch`);
+
+  if (uncachedQueries.length === 0) {
+    return results;
   }
 
   try {
-    const texts = queries.map((q) => q.query);
+    // Batch embeddings for uncached queries
+    const batchSize = 500;
+    
+    for (let i = 0; i < uncachedQueries.length; i += batchSize) {
+      const batch = uncachedQueries.slice(i, i + batchSize);
+      const texts = batch.map(q => q.query_normalized);
+      
     const response = await openai.embeddings.create({
       model: 'text-embedding-3-small',
       input: texts,
     });
 
-    return queries.map((q, index) => ({
-      ...q,
-      embedding: response.data[index]?.embedding || [],
-      query_score: 0,
-      relevance_score: 0,
-      intent_weight: getIntentWeight(q.intent || 'informational'),
-    }));
+      for (let j = 0; j < batch.length; j++) {
+        const embedding = response.data[j]?.embedding || [];
+        const query = batch[j];
+        
+        // Cache the embedding
+        const cacheKey = generateCacheKey('embedding', query.query_normalized);
+        setCache(cacheKey, embedding);
+        
+        results.push({ ...query, embedding });
+      }
+      
+      // Small delay between batches
+      if (i + batchSize < uncachedQueries.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+    
+    console.log(`Created embeddings for ${uncachedQueries.length} new queries`);
+    return results;
   } catch (error) {
     console.error('Error creating embeddings:', error);
-    return queries.map((q) => ({
-      ...q,
-      query_score: 0,
-      relevance_score: 0,
-      intent_weight: getIntentWeight(q.intent || 'informational'),
-    }));
+    // Return what we have (cached + queries without embeddings)
+    for (const query of uncachedQueries) {
+      results.push({ ...query });
+    }
+    return results;
   }
 }
 
-async function createCompanyProfileEmbedding(
-  profile: CompanyProfile
-): Promise<number[]> {
+async function createCompanyProfileEmbedding(profile: CompanyProfile): Promise<number[]> {
   if (!process.env.OPENAI_API_KEY) {
     return [];
   }
 
+  // Create a comprehensive profile text for embedding
   const profileText = [
     profile.name,
-    ...profile.products,
-    ...profile.services,
-    ...profile.categories,
-    profile.extractedText?.substring(0, 500) || '',
-  ].join(' ');
+    ...(profile.products || []),
+    ...(profile.services || []),
+    ...(profile.categories || []),
+    ...(profile.targetAudience || []),
+    profile.extractedText?.substring(0, 1000) || '',
+  ].filter(Boolean).join(' ');
+
+  // Check cache first
+  const cacheKey = generateCacheKey('company_embedding', profile.name.toLowerCase(), profile.website);
+  const cached = getCache<number[]>(cacheKey, EMBEDDING_CACHE_DURATION_MS);
+  if (cached) {
+    console.log(`Company embedding cache hit for ${profile.name}`);
+    return cached;
+  }
 
   try {
     const response = await openai.embeddings.create({
@@ -91,66 +208,69 @@ async function createCompanyProfileEmbedding(
       input: profileText,
     });
 
-    return response.data[0]?.embedding || [];
+    const embedding = response.data[0]?.embedding || [];
+    
+    // Cache the result
+    setCache(cacheKey, embedding);
+    
+    return embedding;
   } catch (error) {
     console.error('Error creating company embedding:', error);
     return [];
   }
 }
 
-function calculateRelevanceScores(
-  queries: QueryWithScore[],
+/**
+ * Step 5: Scoring / Ranking
+ */
+function calculateQueryScores(
+  queries: QueryWithEmbedding[],
   companyEmbedding: number[]
-): QueryWithScore[] {
-  if (companyEmbedding.length === 0) {
-    // No embedding available, use volume-based scoring
-    return queries.map((q) => ({
-      ...q,
-      relevance_score: normalizeVolume(q.volume_monthly || 0),
-    }));
-  }
-
-  return queries.map((q) => {
-    let relevance = 0;
+): ScoredQuery[] {
+  // Calculate max volume for normalization
+  const maxVolume = Math.max(...queries.map(q => q.volume_monthly || 0), 1);
+  
+  return queries.map(q => {
+    // Volume score: log1p normalized (works even with has_volume=false)
+    const volumeScore = q.has_volume && q.volume_monthly
+      ? Math.log1p(q.volume_monthly) / Math.log1p(maxVolume)
+      : 0; // No volume data -> 0 (we'll still keep the query, but it should rank lower by volume)
     
-    if (q.embedding && q.embedding.length > 0) {
-      relevance = cosineSimilarity(q.embedding, companyEmbedding);
-    } else {
-      // Fallback to volume-based
-      relevance = normalizeVolume(q.volume_monthly || 0);
+    // Relevance score: cosine similarity to company profile
+    let relevanceScore = 0.5; // Default if no embeddings
+    if (q.embedding && q.embedding.length > 0 && companyEmbedding.length > 0) {
+      relevanceScore = cosineSimilarity(q.embedding, companyEmbedding);
+      // Normalize to 0-1 range (cosine can be negative)
+      relevanceScore = (relevanceScore + 1) / 2;
     }
-
-    // Calculate query score
-    const volumeScore = normalizeVolume(q.volume_monthly || 0);
-    const queryScore = 0.4 * volumeScore + 0.4 * relevance + 0.2 * q.intent_weight;
+    
+    // Source bonus: +0.1 if discovered via PAA (real SERP data)
+    const sourceBonus = q.source === 'paa' ? 1.0 : 0.0;
+    
+    // Intent weight
+    const intentWeight = getIntentWeight(q.intent || 'informational');
+    
+    // IMPORTANT: Rank primarily by volume_monthly, per product requirement.
+    // We keep a tiny tie-breaker to avoid totally flat ordering for identical volumes.
+    const queryScore =
+      volumeScore +
+      0.0005 * relevanceScore +
+      0.0002 * sourceBonus +
+      0.0002 * intentWeight;
+    
+    // Calculate confidence
+    const confidence = calculateQueryConfidence(q);
 
     return {
       ...q,
-      relevance_score: relevance,
+      volume_score: volumeScore,
+      relevance_score: relevanceScore,
+      source_bonus: sourceBonus,
+      intent_weight: intentWeight,
       query_score: queryScore,
+      confidence,
     };
   });
-}
-
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0;
-  
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-function normalizeVolume(volume: number): number {
-  // Normalize to 0-1 scale (assuming max volume of 100k)
-  return Math.min(volume / 100000, 1);
 }
 
 function getIntentWeight(intent: string): number {
@@ -162,138 +282,384 @@ function getIntentWeight(intent: string): number {
     informational: 0.6,
     troubleshooting: 0.5,
   };
-  
   return weights[intent] || 0.5;
 }
 
-function clusterQueries(queries: QueryWithScore[]): QueryWithScore[][] {
-  // Simple clustering based on query similarity
-  // For prototype: use keyword-based clustering
-  // In production, use k-means on embeddings
+function calculateQueryConfidence(query: QueryWithEmbedding): number {
+  let confidence = 0.2; // Base confidence
   
-  const clusters: QueryWithScore[][] = [];
-  const used = new Set<number>();
+  // +0.2 if has_volume=true
+  if (query.has_volume) {
+    confidence += 0.2;
+  }
   
+  // +0.1 if source == "paa" (discovered from SERP)
+  if (query.source === 'paa') {
+    confidence += 0.1;
+  }
+  
+  // +0.1 if intent is clear (transactional/navigational)
+  const clearIntents = ['transactional', 'navigational'];
+  if (query.intent && clearIntents.includes(query.intent)) {
+    confidence += 0.1;
+  }
+  
+  return Math.min(confidence, 1.0);
+}
+
+/**
+ * Step 3: Cluster Queries into Topics
+ * Uses embedding-based clustering when available, falls back to keyword-based
+ */
+function clusterQueriesWithEmbeddings(queries: ScoredQuery[]): ClusterResult[] {
+  // Check if we have embeddings
+  const hasEmbeddings = queries.some(q => q.embedding && q.embedding.length > 0);
+  
+  if (hasEmbeddings) {
+    return clusterByEmbeddings(queries);
+  } else {
+    return clusterByKeywords(queries);
+  }
+}
+
+/**
+ * Agglomerative-style clustering using cosine distance
+ */
+function clusterByEmbeddings(queries: ScoredQuery[]): ClusterResult[] {
+  const threshold = 0.25; // Cosine distance threshold for clustering
+  const clusters: ClusterResult[] = [];
+  const assigned = new Set<number>();
+  
+  // Sort by query_score descending to seed clusters with best queries
+  const sortedIndices = queries
+    .map((_, i) => i)
+    .sort((a, b) => (queries[b].query_score || 0) - (queries[a].query_score || 0));
+  
+  for (const seedIdx of sortedIndices) {
+    if (assigned.has(seedIdx)) continue;
+    
+    const seedQuery = queries[seedIdx];
+    if (!seedQuery.embedding || seedQuery.embedding.length === 0) {
+      // Handle query without embedding separately
+      assigned.add(seedIdx);
+      clusters.push({
+        topic_id: `t${clusters.length + 1}`,
+        queries: [seedQuery],
+      });
+      continue;
+    }
+    
+    // Start new cluster with seed
+    const clusterQueries: ScoredQuery[] = [seedQuery];
+    assigned.add(seedIdx);
+    
+    // Find similar queries to add to cluster
   for (let i = 0; i < queries.length; i++) {
-    if (used.has(i)) continue;
-    
-    const cluster = [queries[i]];
-    used.add(i);
-    
-    // Find similar queries
-    const keywords1 = extractKeywords(queries[i].query);
-    
-    for (let j = i + 1; j < queries.length; j++) {
-      if (used.has(j)) continue;
+      if (assigned.has(i)) continue;
       
-      const keywords2 = extractKeywords(queries[j].query);
-      const similarity = calculateKeywordSimilarity(keywords1, keywords2);
+      const candidate = queries[i];
+      if (!candidate.embedding || candidate.embedding.length === 0) continue;
       
-      if (similarity > 0.3) { // Threshold for clustering
-        cluster.push(queries[j]);
-        used.add(j);
+      const similarity = cosineSimilarity(seedQuery.embedding, candidate.embedding);
+      const distance = 1 - similarity;
+      
+      if (distance < threshold) {
+        clusterQueries.push(candidate);
+        assigned.add(i);
       }
     }
     
-    clusters.push(cluster);
+    // Calculate centroid
+    const centroid = calculateCentroid(clusterQueries);
+    
+    clusters.push({
+      topic_id: `t${clusters.length + 1}`,
+      queries: clusterQueries,
+      centroid,
+    });
+    
+    // Limit to ~10 clusters for prototype
+    if (clusters.length >= 15) break;
   }
   
-  // Sort clusters by total volume
-  clusters.sort((a, b) => {
-    const volumeA = a.reduce((sum, q) => sum + (q.volume_monthly || 0), 0);
-    const volumeB = b.reduce((sum, q) => sum + (q.volume_monthly || 0), 0);
-    return volumeB - volumeA;
+  // Handle any remaining unassigned queries
+  for (let i = 0; i < queries.length; i++) {
+    if (!assigned.has(i)) {
+      // Find closest existing cluster or create new one
+      const query = queries[i];
+      let bestCluster: ClusterResult | null = null;
+      let bestSimilarity = -1;
+      
+      if (query.embedding && query.embedding.length > 0) {
+        for (const cluster of clusters) {
+          if (cluster.centroid) {
+            const sim = cosineSimilarity(query.embedding, cluster.centroid);
+            if (sim > bestSimilarity) {
+              bestSimilarity = sim;
+              bestCluster = cluster;
+            }
+          }
+        }
+      }
+      
+      if (bestCluster && bestSimilarity > 0.5) {
+        bestCluster.queries.push(query);
+      } else if (clusters.length < 15) {
+        clusters.push({
+          topic_id: `t${clusters.length + 1}`,
+          queries: [query],
+        });
+      } else {
+        // Add to largest cluster as fallback
+        const largest = clusters.reduce((a, b) => a.queries.length > b.queries.length ? a : b);
+        largest.queries.push(query);
+      }
+    }
+  }
+  
+  return clusters;
+}
+
+function calculateCentroid(queries: ScoredQuery[]): number[] {
+  const embeddings = queries
+    .filter(q => q.embedding && q.embedding.length > 0)
+    .map(q => q.embedding!);
+  
+  if (embeddings.length === 0) return [];
+  
+  const dim = embeddings[0].length;
+  const centroid = new Array(dim).fill(0);
+  
+  for (const emb of embeddings) {
+    for (let i = 0; i < dim; i++) {
+      centroid[i] += emb[i];
+    }
+  }
+  
+  for (let i = 0; i < dim; i++) {
+    centroid[i] /= embeddings.length;
+  }
+  
+  return centroid;
+}
+
+/**
+ * Fallback: keyword-based clustering
+ */
+function clusterByKeywords(queries: ScoredQuery[]): ClusterResult[] {
+  // Define topic keywords for rule-based clustering
+  const topicKeywords: Record<string, string[]> = {
+    'returns': ['return', 'refund', 'exchange', 'money back'],
+    'shipping': ['shipping', 'delivery', 'ship', 'arrive', 'tracking', 'order'],
+    'sizing': ['size', 'sizing', 'fit', 'small', 'large', 'tight', 'loose'],
+    'discounts': ['discount', 'code', 'coupon', 'promo', 'sale', 'deal', 'black friday'],
+    'stores': ['store', 'location', 'near me', 'where', 'buy', 'shop'],
+    'quality': ['quality', 'worth', 'review', 'good', 'bad', 'compare', 'vs'],
+    'products': ['leggings', 'shorts', 'shirt', 'hoodie', 'jacket', 'bra'],
+    'account': ['account', 'login', 'password', 'sign in', 'app'],
+  };
+  
+  const clusters: Map<string, ScoredQuery[]> = new Map();
+  const unclustered: ScoredQuery[] = [];
+  
+  for (const query of queries) {
+    const lowerQuery = query.query_normalized;
+    let assigned = false;
+    
+    for (const [topic, keywords] of Object.entries(topicKeywords)) {
+      if (keywords.some(kw => lowerQuery.includes(kw))) {
+        if (!clusters.has(topic)) {
+          clusters.set(topic, []);
+        }
+        clusters.get(topic)!.push(query);
+        assigned = true;
+        break;
+      }
+    }
+    
+    if (!assigned) {
+      unclustered.push(query);
+    }
+  }
+  
+  // Convert to ClusterResult format
+  const results: ClusterResult[] = [];
+  let id = 1;
+  
+  clusters.forEach((clusterQueries) => {
+    if (clusterQueries.length > 0) {
+      results.push({
+        topic_id: `t${id++}`,
+        queries: clusterQueries,
+      });
+    }
   });
   
-  return clusters.slice(0, 10); // Top 10 clusters
+  // Add unclustered as "Other" topic if there are any
+  if (unclustered.length > 0) {
+    results.push({
+      topic_id: `t${id}`,
+      queries: unclustered,
+    });
+  }
+  
+  return results;
 }
 
-function extractKeywords(query: string): string[] {
-  const stopwords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those']);
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
   
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((word) => word.length > 2 && !stopwords.has(word));
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+  return denominator > 0 ? dotProduct / denominator : 0;
 }
 
-function calculateKeywordSimilarity(keywords1: string[], keywords2: string[]): number {
-  const set1 = new Set(keywords1);
-  const set2 = new Set(keywords2);
-  
-  const intersection = keywords1.filter((k) => set2.has(k)).length;
-  const union = new Set([...keywords1, ...keywords2]).size;
-  
-  return union > 0 ? intersection / union : 0;
-}
-
-async function labelAndRankClusters(
-  clusters: QueryWithScore[][],
-  allQueries: QueryWithScore[]
-): Promise<Topic[]> {
+/**
+ * Step 4 & 6: Label Each Topic + Pick Top Queries
+ */
+async function labelAndRankClusters(clusters: ClusterResult[]): Promise<Topic[]> {
   const topics: Topic[] = [];
   
   for (const cluster of clusters) {
-    // Sort queries within cluster by score
-    cluster.sort((a, b) => (b.query_score || 0) - (a.query_score || 0));
+    // Sort queries within cluster primarily by volume_monthly (desc), then by query_score
+    cluster.queries.sort((a, b) => {
+      const aVol = a.has_volume ? (a.volume_monthly || 0) : -1;
+      const bVol = b.has_volume ? (b.volume_monthly || 0) : -1;
+      if (bVol !== aVol) return bVol - aVol;
+      return (b.query_score || 0) - (a.query_score || 0);
+    });
     
-    // Label cluster
-    const topicLabel = await labelCluster(cluster);
+    // Get top N queries for this topic
+    const topQueries = cluster.queries.slice(0, 10);
     
-    // Calculate topic score (sum of top N query volumes)
-    const topQueries = cluster.slice(0, 5);
-    const topicScore = topQueries.reduce((sum, q) => sum + (q.volume_monthly || 0), 0);
+    // Label the cluster
+    const topicLabel = await labelCluster(topQueries);
     
-    // Calculate average confidence (will be set in provenance step)
-    const avgConfidence = 0.7; // Placeholder
+    // Calculate topic score: sum of top 5 volumes (monthly searches)
+    const top5 = cluster.queries.slice(0, 5);
+    const topicScore = top5.reduce((sum, q) => sum + (q.volume_monthly || 0), 0);
+    
+    // Calculate volume coverage: queries with volume / total queries in topic
+    const withVolume = cluster.queries.filter(q => q.has_volume).length;
+    const volumeCoverage = cluster.queries.length > 0 
+      ? withVolume / cluster.queries.length 
+      : 0;
+    
+    // Average confidence across top queries
+    const avgConfidence = topQueries.length > 0
+      ? topQueries.reduce((sum, q) => sum + q.confidence, 0) / topQueries.length
+      : 0.2;
     
     topics.push({
+      topic_id: cluster.topic_id,
       topic: topicLabel,
       topic_score: topicScore,
-      confidence: avgConfidence,
-      top_queries: topQueries.map((q) => ({
-        query: q.query,
-        intent: q.intent || 'informational',
-        volume_monthly: q.volume_monthly,
-        sources: [],
-        confidence: 0.7,
-        query_score: q.query_score,
-      })),
+      confidence: Math.round(avgConfidence * 100) / 100,
+      volume_coverage: Math.round(volumeCoverage * 100) / 100,
+      top_queries: topQueries.map(q => formatQueryResult(q)),
     });
   }
   
-  return topics;
+  // Sort topics by topic_score descending
+  topics.sort((a, b) => b.topic_score - a.topic_score);
+  
+  // Return top 10 topics
+  return topics.slice(0, 10);
 }
 
-async function labelCluster(cluster: QueryWithScore[]): Promise<string> {
-  if (!process.env.OPENAI_API_KEY || cluster.length === 0) {
-    // Fallback: use first query as label
-    return cluster[0]?.query.split(/\s+/).slice(0, 3).join(' ') || 'Unnamed Topic';
+function formatQueryResult(query: ScoredQuery): QueryResult {
+  // Build sources array
+  const sources: string[] = [];
+  if (query.source === 'paa') {
+    sources.push('discovered:paa');
+  } else if (query.source === 'llm') {
+    sources.push('generated:llm');
   }
-
-  const queries = cluster.slice(0, 5).map((q) => q.query).join(', ');
+  if (query.volume_provider) {
+    sources.push(query.volume_provider);
+  }
   
-  try {
+  return {
+    query: query.query_original || query.query,
+    intent: query.intent || 'informational',
+    volume_monthly: query.volume_monthly,
+    has_volume: query.has_volume || false,
+    sources,
+    confidence: Math.round(query.confidence * 100) / 100,
+    query_score: Math.round(query.query_score * 100) / 100,
+  };
+}
+
+async function labelCluster(queries: ScoredQuery[]): Promise<string> {
+  if (queries.length === 0) {
+    return 'Unnamed Topic';
+  }
+  
+  // Try LLM labeling first
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const queryTexts = queries.slice(0, 10).map(q => q.query_normalized).join('\n- ');
+      
     const response = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+        model: 'gpt-4o-mini',
       messages: [
         {
           role: 'system',
-          content: 'You are a topic labeling expert. Return only a 2-4 word topic label, no other text.',
+            content: 'You are a topic labeling expert. Given a list of related search queries, provide a concise 2-4 word topic label that captures the common theme. Return ONLY the label, no other text or punctuation.',
         },
         {
           role: 'user',
-          content: `These queries belong to the same topic: ${queries}\n\nProvide a concise 2-4 word topic label:`,
+            content: `These queries belong to the same topic:\n- ${queryTexts}\n\nTopic label:`,
         },
       ],
       temperature: 0.3,
-      max_tokens: 10,
+        max_tokens: 15,
     });
 
-    return response.choices[0]?.message?.content?.trim() || 'Unnamed Topic';
+      const label = response.choices[0]?.message?.content?.trim();
+      if (label && label.length > 0 && label.length < 50) {
+        return label;
+      }
   } catch (error) {
-    console.error('Error labeling cluster:', error);
-    return cluster[0]?.query.split(/\s+/).slice(0, 3).join(' ') || 'Unnamed Topic';
+      console.error('Error labeling cluster with LLM:', error);
+    }
   }
+  
+  // Fallback: find most central query (closest to centroid) or highest scored
+  // and extract a short label from it
+  const topQuery = queries[0];
+  return extractSimpleLabel(topQuery.query_normalized);
 }
 
+function extractSimpleLabel(query: string): string {
+  // Remove common question words and stopwords
+  const stopwords = new Set([
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 
+    'with', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 
+    'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'may', 
+    'might', 'must', 'can', 'this', 'that', 'these', 'those', 'what', 'how',
+    'why', 'when', 'where', 'who', 'which', 'i', 'me', 'my', 'you', 'your'
+  ]);
+  
+  const words = query
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !stopwords.has(w))
+    .slice(0, 4);
+  
+  if (words.length === 0) {
+    return query.split(/\s+/).slice(0, 3).join(' ');
+  }
+  
+  // Capitalize first letter
+  const label = words.join(' ');
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}

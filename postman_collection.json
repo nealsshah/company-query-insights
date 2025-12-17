@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Meridian Take-Home API",
-    "description": "API collection for Company Search Query Insights",
+    "description": "Company Search Query Insights Pipeline - Full 6-step workflow for generating ranked search query topics from company context.\n\n## Pipeline Overview\n1. **Company Context** - Extract company profile from website\n2. **Seed Queries** - Generate initial search queries via LLM\n3. **Expand Queries** - Discover related queries via PAA (People Also Ask)\n4. **Enrich Volume** - Add search volume metrics via DataForSEO\n5. **Cluster & Rank** - Group queries into topics and rank by importance\n6. **Provenance** - Add confidence scores and source attribution\n\n## Quick Start\nRun the **Full Pipeline - Get Insights** endpoint for end-to-end execution.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -13,15 +13,11 @@
         "url": {
           "raw": "http://localhost:3000/api/health",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "health"
-          ]
-        }
+          "path": ["api", "health"]
+        },
+        "description": "Check if the API server is running and healthy."
       }
     },
     {
@@ -41,15 +37,11 @@
         "url": {
           "raw": "http://localhost:3000/api/insights",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "insights"
-          ]
-        }
+          "path": ["api", "insights"]
+        },
+        "description": "**Full Pipeline Execution**\n\nRuns all 6 steps in sequence:\n1. Company Context → 2. Seed Queries → 3. PAA Expansion → 4. Volume Enrichment → 5. Clustering & Ranking → 6. Provenance\n\n**Parameters:**\n- `company` (required): Company name\n- `website` (required): Company website URL\n- `geo` (optional): Geographic target, default \"US\"\n- `lang` (optional): Language, default \"en\"\n\n**Returns:** Ranked topics with search queries, volume metrics, and confidence scores."
       }
     },
     {
@@ -69,16 +61,11 @@
         "url": {
           "raw": "http://localhost:3000/api/steps/company-context",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "steps",
-            "company-context"
-          ]
-        }
+          "path": ["api", "steps", "company-context"]
+        },
+        "description": "**Step 1: Extract Company Context**\n\nScrapes the company website and uses LLM to extract:\n- Company name and brand terms\n- Products and services\n- Target audience\n- Categories\n\n**Parameters:**\n- `company` (required): Company name\n- `website` (required): Company website URL"
       }
     },
     {
@@ -98,20 +85,15 @@
         "url": {
           "raw": "http://localhost:3000/api/steps/seed-queries",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "steps",
-            "seed-queries"
-          ]
-        }
+          "path": ["api", "steps", "seed-queries"]
+        },
+        "description": "**Step 2: Generate Seed Queries**\n\nUses LLM to generate initial search queries covering:\n- Navigational queries\n- Informational queries\n- Transactional queries\n- Comparison queries\n- Discovery queries\n- Troubleshooting queries\n\n**Parameters:**\n- `company` (required): Company name\n- `website` (required): Company website URL\n\n**Alternative:** Pass `companyProfile` directly from Step 1 output."
       }
     },
     {
-      "name": "Step 3 - Expand Queries",
+      "name": "Step 3 - Expand Queries (PAA)",
       "request": {
         "method": "POST",
         "header": [
@@ -122,25 +104,20 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"seedQueries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"intent\": \"navigational\",\n      \"rationale\": \"Direct brand search\",\n      \"seed_type\": \"llm\"\n    }\n  ]\n}"
+          "raw": "{\n  \"seedQueries\": [\n    {\n      \"query\": \"gymshark store locator\",\n      \"intent\": \"navigational\",\n      \"rationale\": \"Users looking for physical store locations\",\n      \"seed_type\": \"llm\"\n    },\n    {\n      \"query\": \"gymshark return policy\",\n      \"intent\": \"informational\",\n      \"rationale\": \"Users researching return options\",\n      \"seed_type\": \"llm\"\n    },\n    {\n      \"query\": \"gymshark student discount\",\n      \"intent\": \"transactional\",\n      \"rationale\": \"Users looking for discounts\",\n      \"seed_type\": \"llm\"\n    }\n  ],\n  \"geo\": \"US\",\n  \"lang\": \"en\"\n}"
         },
         "url": {
           "raw": "http://localhost:3000/api/steps/expand-queries",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "steps",
-            "expand-queries"
-          ]
-        }
+          "path": ["api", "steps", "expand-queries"]
+        },
+        "description": "**Step 3: Expand Queries via PAA**\n\nFor each seed query, fetches \"People Also Ask\" questions from Google SERP to discover real user questions.\n\n**Parameters:**\n- `seedQueries` (required): Array of seed queries from Step 2\n- `geo` (optional): Geographic target, default \"US\"\n- `lang` (optional): Language, default \"en\"\n\n**Note:** Requires SERP_API_KEY environment variable."
       }
     },
     {
-      "name": "Step 4 - Enrich Volume",
+      "name": "Step 4 - Enrich Volume (DataForSEO)",
       "request": {
         "method": "POST",
         "header": [
@@ -151,21 +128,16 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"queries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\"\n    }\n  ],\n  \"geo\": \"US\",\n  \"lang\": \"en\"\n}"
+          "raw": "{\n  \"queries\": [\n    {\n      \"query\": \"gymshark store locator\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\"\n    },\n    {\n      \"query\": \"gymshark store near me\",\n      \"source\": \"paa\",\n      \"parent_seed\": \"gymshark store locator\",\n      \"intent\": \"navigational\"\n    },\n    {\n      \"query\": \"what stores sell gymshark\",\n      \"source\": \"paa\",\n      \"parent_seed\": \"gymshark store locator\",\n      \"intent\": \"navigational\"\n    },\n    {\n      \"query\": \"gymshark student discount\",\n      \"source\": \"llm\",\n      \"intent\": \"transactional\"\n    }\n  ],\n  \"geo\": \"US\",\n  \"lang\": \"en\"\n}"
         },
         "url": {
           "raw": "http://localhost:3000/api/steps/enrich-volume",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "steps",
-            "enrich-volume"
-          ]
-        }
+          "path": ["api", "steps", "enrich-volume"]
+        },
+        "description": "**Step 4: Enrich with Volume Metrics**\n\nAdds search volume, CPC, and competition data from DataForSEO Google Ads API.\n\n**Parameters:**\n- `queries` (required): Array of expanded queries from Step 3\n- `geo` (optional): Geographic target, default \"US\"\n- `lang` (optional): Language, default \"en\"\n\n**Note:** Requires DATA4SEO_USERNAME and DATA4SEO_PASSWORD environment variables.\n\n**Features:**\n- Batches up to 500 keywords per request\n- Caches results locally to save API budget\n- Falls back to estimates when volume unavailable"
       }
     },
     {
@@ -180,21 +152,16 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"queries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 1000,\n      \"geo\": \"US\",\n      \"lang\": \"en\"\n    }\n  ],\n  \"company\": \"Gymshark\"\n}"
+          "raw": "{\n  \"queries\": [\n    {\n      \"query\": \"gymshark store locator\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 390,\n      \"has_volume\": true,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    },\n    {\n      \"query\": \"gymshark store near me\",\n      \"source\": \"paa\",\n      \"parent_seed\": \"gymshark store locator\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 1900,\n      \"has_volume\": true,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    },\n    {\n      \"query\": \"what stores sell gymshark\",\n      \"source\": \"paa\",\n      \"parent_seed\": \"gymshark store locator\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 260,\n      \"has_volume\": true,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    },\n    {\n      \"query\": \"gymshark student discount\",\n      \"source\": \"llm\",\n      \"intent\": \"transactional\",\n      \"volume_monthly\": 5400,\n      \"has_volume\": true,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    },\n    {\n      \"query\": \"is gymshark worth the price\",\n      \"source\": \"llm\",\n      \"intent\": \"informational\",\n      \"has_volume\": false,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    }\n  ],\n  \"company\": \"Gymshark\",\n  \"website\": \"https://www.gymshark.com\"\n}"
         },
         "url": {
           "raw": "http://localhost:3000/api/steps/cluster-rank",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "steps",
-            "cluster-rank"
-          ]
-        }
+          "path": ["api", "steps", "cluster-rank"]
+        },
+        "description": "**Step 5: Cluster & Rank**\n\nGroups queries into semantic topics and ranks them by importance.\n\n**Parameters:**\n- `queries` (required): Array of enriched queries from Step 4\n- `company` (required): Company name\n- `website` (required): Company website URL\n\n**Alternative:** Pass `companyProfile` directly instead of company/website.\n\n**Features:**\n- Embedding-based clustering using OpenAI text-embedding-3-small\n- Query scoring: 55% volume + 35% relevance + 5% source + 5% intent\n- Topic labeling via GPT-4o-mini\n- Handles queries without volume data gracefully"
       }
     },
     {
@@ -209,21 +176,16 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"topics\": [\n    {\n      \"topic\": \"Store Locations\",\n      \"topic_score\": 1000,\n      \"confidence\": 0.7,\n      \"top_queries\": [\n        {\n          \"query\": \"gymshark store\",\n          \"intent\": \"navigational\",\n          \"volume_monthly\": 1000\n        }\n      ]\n    }\n  ],\n  \"queries\": [\n    {\n      \"query\": \"gymshark store\",\n      \"source\": \"llm\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 1000,\n      \"geo\": \"US\",\n      \"lang\": \"en\"\n    }\n  ],\n  \"company\": \"Gymshark\"\n}"
+          "raw": "{\n  \"topics\": [\n    {\n      \"topic_id\": \"t1\",\n      \"topic\": \"Gymshark Store Locations\",\n      \"topic_score\": 3.42,\n      \"confidence\": 0.51,\n      \"volume_coverage\": 0.63,\n      \"top_queries\": [\n        {\n          \"query\": \"gymshark store near me\",\n          \"intent\": \"navigational\",\n          \"volume_monthly\": 1900,\n          \"has_volume\": true,\n          \"sources\": [\"discovered:paa\", \"dataforseo:google_ads\"],\n          \"confidence\": 0.6,\n          \"query_score\": 0.86\n        },\n        {\n          \"query\": \"what stores sell gymshark\",\n          \"intent\": \"navigational\",\n          \"volume_monthly\": 260,\n          \"has_volume\": true,\n          \"sources\": [\"discovered:paa\", \"dataforseo:google_ads\"],\n          \"confidence\": 0.6,\n          \"query_score\": 0.74\n        }\n      ]\n    }\n  ],\n  \"queries\": [\n    {\n      \"query\": \"gymshark store near me\",\n      \"source\": \"paa\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 1900,\n      \"has_volume\": true,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    },\n    {\n      \"query\": \"what stores sell gymshark\",\n      \"source\": \"paa\",\n      \"intent\": \"navigational\",\n      \"volume_monthly\": 260,\n      \"has_volume\": true,\n      \"geo\": \"US\",\n      \"lang\": \"en\",\n      \"volume_provider\": \"dataforseo:google_ads\"\n    }\n  ],\n  \"company\": \"Gymshark\"\n}"
         },
         "url": {
           "raw": "http://localhost:3000/api/steps/provenance",
           "protocol": "http",
-          "host": [
-            "localhost"
-          ],
+          "host": ["localhost"],
           "port": "3000",
-          "path": [
-            "api",
-            "steps",
-            "provenance"
-          ]
-        }
+          "path": ["api", "steps", "provenance"]
+        },
+        "description": "**Step 6: Provenance & Confidence**\n\nAdds source attribution and confidence scores to the final output.\n\n**Parameters:**\n- `topics` (required): Array of topics from Step 5\n- `queries` (required): Array of enriched queries from Step 4\n- `company` (required): Company name\n\n**Confidence Scoring:**\n- Base: 0.2\n- +0.6 if observed in GSC/Bing (not implemented in prototype)\n- +0.2 if has volume from DataForSEO\n- +0.1 if multiple discovery sources\n\n**Source Types:**\n- `generated:llm` - Query generated by LLM\n- `discovered:paa` - Discovered via People Also Ask\n- `dataforseo:google_ads` - Volume from DataForSEO"
       }
     }
   ]

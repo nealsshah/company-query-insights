@@ -58,9 +58,11 @@ export interface QueryWithScore extends EnrichedQuery {
 }
 
 export interface Topic {
+  topic_id?: string;
   topic: string;
   topic_score: number;
   confidence: number;
+  volume_coverage?: number;
   top_queries: QueryResult[];
 }
 
@@ -68,6 +70,7 @@ export interface QueryResult {
   query: string;
   intent: string;
   volume_monthly?: number;
+  has_volume?: boolean;
   sources: string[];
   confidence: number;
   query_score?: number;

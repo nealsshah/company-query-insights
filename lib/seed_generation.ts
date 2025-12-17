@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { CompanyProfile, SeedQuery } from '@/types';
+import { generateCacheKey, getCache, setCache } from './cache';
 
 /**
  * Step 2: Seed Query Generation (LLM)
@@ -10,12 +11,24 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Cache duration: 7 days for seed queries
+const CACHE_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
+
 export async function generateSeedQueries(
   companyProfile: CompanyProfile
 ): Promise<SeedQuery[]> {
+  // Check cache first
+  const cacheKey = generateCacheKey('seed_queries', companyProfile.name.toLowerCase(), companyProfile.website);
+  const cached = getCache<SeedQuery[]>(cacheKey, CACHE_DURATION_MS);
+  if (cached) {
+    return cached;
+  }
+
   if (!process.env.OPENAI_API_KEY) {
     // Fallback: return basic queries if no API key
-    return generateFallbackQueries(companyProfile);
+    const fallback = generateFallbackQueries(companyProfile);
+    setCache(cacheKey, fallback);
+    return fallback;
   }
 
   const prompt = buildSeedPrompt(companyProfile);
@@ -39,14 +52,23 @@ export async function generateSeedQueries(
 
     const content = response.choices[0]?.message?.content;
     if (!content) {
-      return generateFallbackQueries(companyProfile);
+      const fallback = generateFallbackQueries(companyProfile);
+      setCache(cacheKey, fallback);
+      return fallback;
     }
 
     const parsed = JSON.parse(content);
-    return parsed.queries || generateFallbackQueries(companyProfile);
+    const queries = parsed.queries || generateFallbackQueries(companyProfile);
+    
+    // Cache the result
+    setCache(cacheKey, queries);
+    
+    return queries;
   } catch (error) {
     console.error('Error generating seed queries:', error);
-    return generateFallbackQueries(companyProfile);
+    const fallback = generateFallbackQueries(companyProfile);
+    setCache(cacheKey, fallback);
+    return fallback;
   }
 }
 
